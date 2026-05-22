@@ -58,6 +58,8 @@ GBUFFER_OUT FragmentMain(VTX_OUT In)
 	Mtl.Roughness = 1.0f;
 	Mtl.SubsurfStrength = 0.0f;
 	Mtl.SubsurfOpacity = 1.0f;
+	Mtl.envDif = float3(0.f, 0.f, 0.f);
+	Mtl.envSpc = float3(0.f, 0.f, 0.f);
 
 	GBUFFER_OUT Out;
 	Out.GBuffer0.a = 1.0f;
@@ -158,7 +160,7 @@ GBUFFER_OUT FragmentMain(VTX_OUT In)
 			#else //WITH_ShadowMap == CalcLispPos_PS
 				const float3 shadowMapVal = CalcGetShadowRateWorldSpace(In.VtxWld, In.VecNrm.xyz, In.VecEye).rgb;
 			#endif
-			lightmapColor.rgb = min(shadowMapVal.rgb, lightMapVal.rgb)*gFC_DebugPointLightParams.y;
+			lightmapColor.rgb = min(shadowMapVal.rgb, lightMapVal.rgb); //*gFC_DebugPointLightParams.y;
 			lightmapColor.a = lightMapVal.a*shadowMapVal.r; //QLOC: store shadowing from shadow map too
 		#else
 			//light map only
@@ -176,7 +178,7 @@ GBUFFER_OUT FragmentMain(VTX_OUT In)
 		#endif
 	#endif
 	}
-
+	
 #if defined(WITH_MultiTexture) && defined(WITH_SpecularMap)
 	float4 pblTexData = tex2D(gSMP_PBLMap, difTexUV.xy).rgba;
 	float4 pblTexData2 = tex2D(gSMP_PBLMap2, In.TexDifDif.zw).rgba;
@@ -188,6 +190,8 @@ GBUFFER_OUT FragmentMain(VTX_OUT In)
 #endif
 
 	MATERIAL Mtl = PackMaterial(sampledColor, pblTexData, In.VecNrm.xyz);
+	//Mtl.DiffuseColor = ClassicIBL(Mtl, In.VecEye.xyz);
+	//Mtl.DiffuseColor = (gFC_SpcMapMultiplier  / 5.0f);
 #ifdef FS_SUBSURF
 #ifdef WITH_SpecularMap
 	float2 subsurfData = tex2D(gSMP_Subsurf, difTexUV.xy).rg;
@@ -205,31 +209,34 @@ GBUFFER_OUT FragmentMain(VTX_OUT In)
 	float3 emissiveComponent = CalcEmissive(Mtl);
 
 	//image-based lighting
-	float3 envLightComponent = CalcEnvIBL(Mtl, vertexNormal, In.VecEye.xyz, In.VtxWld.xyz, specularF90) * lightmapColor.rgb;
-
+	//float3 envLightComponent = CalcEnvIBL(Mtl, vertexNormal, In.VecEye.xyz, In.VtxWld.xyz, specularF90) * lightmapColor.rgb;
+	float3 envDifComponent = DiffuseIBL(Mtl, In.VtxWld.xyz) * (lightmapColor.rgb);
 	//ambient light
-	envLightComponent += Mtl.DiffuseColor * CalcHemAmbient(Mtl.Normal);
+	envDifComponent += CalcHemAmbient(Mtl.Normal); //CalcHemAmbient is flat ambient hemisphere light (no diffuse map within)
+	float3 envSpecComponent = SpecularIBL(Mtl, In.VecEye.xyz, In.VtxWld.xyz) * (lightmapColor.rgb);
 
+
+	Mtl.envDif = Mtl.DiffuseColor.rgb * envDifComponent;
+	Mtl.envSpc = Mtl.SpecularColor.rgb * envSpecComponent;
 	if (gFC_SAOEnabled != 0.0f) {
 		const float aoMapVal = tex2Dlod(gSMP_AOMap, float4(In.VtxClp.xy * gFC_SAOParams.xy, 0, 0)).r;
-		envLightComponent *= aoMapVal;
+		envDifComponent *= aoMapVal;
 	}
 
-	Mtl.LitColor.rgb = emissiveComponent + envLightComponent;
+	Mtl.LitColor.rgb = Mtl.DiffuseColor.rgb * envDifComponent + Mtl.SpecularColor * envSpecComponent;
 
 #if(POINT_LIGHT_0 >POINT_LIGHT_TYPE_None)
 	float3 pointLightComponent = CalcPointLightsLegacy(Mtl, In.VecEye.xyz, In.VtxWld.xyz, specularF90, lightmapColor.a);
 #else
 	float3 pointLightComponent = CalcPointLightsClustered(Mtl, In.VecEye.xyz, In.VtxWld.xyz, specularF90, lightmapColor.a);
 #endif
-
 	{//Ghost lights
 	#ifdef WITH_GhostMap
 		float3 L = gFC_GhostLightPos.xyz - In.VtxWld.xyz;
 		float distL = length(L);
 
 		pointLightComponent += PointLightContribution(
-			Mtl.Normal, vertexNormal, L / distL, In.VecEye.xyz,
+			Mtl.Normal, L / distL, In.VecEye.xyz,
 			Mtl.DiffuseColor, Mtl.SpecularColor, specularF90,
 			Mtl.Roughness, gFC_GhostLightCol.rgb, distL,
 			gFC_GhostLightPos.w, gFC_GhostLightCol.w, 0);
@@ -245,8 +252,9 @@ GBUFFER_OUT FragmentMain(VTX_OUT In)
 	}
 
 	//Fog
-	Mtl.LitColor = CalcGetFogCol(Linear2srgb(Mtl.LitColor), gFC_FogCol, In.VecNrm.w); //fog is done in sRGB
-
+	Mtl.LitColor = CalcGetFogCol(Linear2srgb(Mtl.LitColor), gFC_FogCol, In.VecNrm.w);
+	//Mtl.LitColor = Linear2srgb(Mtl.LitColor);
+	//Mtl.LitColor = Srgb2linear(Mtl.LitColor);
 #ifdef VSLS
 	//VS light scattering
 	float4 scatteredColor = CalcGetLightScatteringCol_Blend(Mtl.LitColor, In.LsMul, In.LsAdd); //light scattering is in sRGB as well

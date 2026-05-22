@@ -36,32 +36,30 @@ SFX_VARIANTS := $(VARIANTS:=_HemEnv) \
                 $(VARIANTS:=_HemEnvLerpPntS) \
                 $(VARIANTS:=_HemEnvPntS)
 
-TARGET_NAMES := $(GST_VARIANTS:%=FRPG_Gst_%.fpo) \
-                $(PHN_VARIANTS:%=FRPG_Phn_%.fpo) \
-                $(SFX_VARIANTS:%=FRPG_Sfx_%.fpo)
+# TARGET_NAMES := $(GST_VARIANTS:%=FRPG_Gst_%.fpo) \
+#                 $(PHN_VARIANTS:%=FRPG_Phn_%.fpo) \
+#                 $(SFX_VARIANTS:%=FRPG_Sfx_%.fpo)
+
+TARGET_NAMES := $(PHN_VARIANTS:%=FRPG_Phn_%.fpo)
+
 
 TARGETS := $(foreach target,$(TARGET_NAMES),$(FLVER_OUT)/$(target))
 
 DEFINES := _WIN32=1 _FRAGMENT_SHADER=1 _DX11=1
-FXCFLAGS = //Tps_5_0 //nologo $(foreach define,$(DEFINES),//D$(define))
+FXCFLAGS = /Tps_5_0 /nologo $(foreach define,$(DEFINES),/D$(define))
 
 SOURCES := $(shell find $(SRC_DIR) $(COMMON_DIR) -type f 2> /dev/null)
 
 .PHONY: all
 all: $(FLVER_DCX)
 
-.PHONY: test
-test: STEAM := "$(shell echo $(DSR) | grep -Poh '.*/Steam(?=/steamapps)')/steam.exe"
-test: APPID := 570940
-test: all
-	@echo "Launching Dark Souls Remastered"
-	@$(STEAM) -applaunch $(APPID)
+
 
 $(FLVER_DCX): $(TARGETS)
-	@Yabber $(FLVER_OUT)
+	@Yabber "C:/Program Files (x86)/Steam/steamapps/common/DARK SOULS REMASTERED/shader/FRPG_FlverPBL_fpo_DX11-shaderbnd-dcx"
 
 $(FLVER_OUT):
-	@Yabber $(FLVER_DCX)
+	@Yabber
 
 add_variant = $(foreach name,$(TARGET_NAMES), \
 	$(if $(findstring $(strip $1),$(name)),$(FLVER_OUT)/$(name),)): DEFINES += $(strip $2)
@@ -85,4 +83,4 @@ $(FLVER_OUT)/FRPG_%.fpo: OUT_OBJ = $(subst /,\\,$@)
 $(FLVER_OUT)/FRPG_%.fpo: OUT_ASM = $(OUT_OBJ:.fpo=.asm)
 
 $(FLVER_OUT)/FRPG_%.fpo: $(SOURCES) $(FLVER_OUT)
-	@fxc $(SRC_DIR)/FRPG_FS_HemEnv.fx "//Fo$(OUT_OBJ)" "//Fc$(OUT_ASM)" $(FXCFLAGS) //EFragmentMain
+	@fxc $(SRC_DIR)/FRPG_FS_HemEnv.fx "/Fo$(OUT_OBJ)" $(FXCFLAGS) /EFragmentMain

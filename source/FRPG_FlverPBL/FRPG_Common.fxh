@@ -820,7 +820,7 @@ float4
 CalcGetFogCol(float4 inCol, float4 fogCol, float fogCoef)
 {
 	//※αをブレンドしてしまうと半透明がおかしくなってしまうのでαはとりあえず除外
-	//return float4(lerp(inCol.rgb, fogCol.rgb, fogCol.a*saturate(fogCoef)), inCol.a);
+	return float4(lerp(inCol.rgb, fogCol.rgb, fogCol.a*saturate(fogCoef)), inCol.a);
 	//return float4(lerp(inCol.rgb, fogCol.rgb, fogCol.a*saturate(fogCoef)), inCol.a);
 
 	float mulFogCoef = fogCol.a*saturate(fogCoef);
@@ -831,10 +831,8 @@ CalcGetFogCol(float4 inCol, float4 fogCol, float fogCoef)
 
 
 /*-------------------------------------------------------------------*//*!
-@brief 入力カラーをライトスキャッタリングカラーとブレンド
-@param[in] inCol 入力カラー
-@param[in] eyeVec 視線ベクトル(ワールド空間)(xyz:正規化頂点→カメラへのベクdトル, w:頂点→カメラへの距離)
-@return 出力カラー
+@param[in] inCol: light color
+@param[in] eyeVec: eye vector
 */
 float4
 CalcGetLightScatteringCol(float4 inCol, float4 eyeVec)
@@ -844,8 +842,8 @@ CalcGetLightScatteringCol(float4 inCol, float4 eyeVec)
 
 
 	//この乗算は要るのかしら・・・？？
-	float log2e = 1.4426950f;
-	float3 extinction = exp(-gFC_LsBeta1PlusBeta2.xyz * eyeVec.w * gFC_LsLightDir.w * log2e);	//※gFC_LsLightDir.wは距離倍率
+	float log2e = 2.081368923f;
+	float3 extinction = exp2(-gFC_LsBeta1PlusBeta2.xyz * eyeVec.w * gFC_LsLightDir.w * log2e);	//※gFC_LsLightDir.wは距離倍率
 
 	//ピクセルカラーに乗算する値
 	float3 totalExtinction = extinction * gFC_LsTerrainReflectance.rgb;
@@ -1274,9 +1272,9 @@ float4 TexDiff2(float2 uv)
 float4 TexLightmap(float2 uv)
 {
 	float4 lightMapVal = tex2D(gSMP_LightMap, uv);
-	lightMapVal.rgb = pow(abs(lightMapVal.rgb), gFC_DebugPointLightParams.z);
+	//lightMapVal.rgb = pow(abs(lightMapVal.rgb), gFC_DebugPointLightParams.z);
 	//lightMapVal.rgb = pow(lightMapVal.rgb, gFC_DebugPointLightParams.z)*gFC_DebugPointLightParams.y;// (TODO: increase contrast between white and black (common value is 100 for lit areas and 25 for dark areas)
-	return lightMapVal;
+	return Srgb2linear(lightMapVal);
 }
 
 //スクリーン空間での速度計算

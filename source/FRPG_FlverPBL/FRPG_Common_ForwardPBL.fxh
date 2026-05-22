@@ -64,6 +64,7 @@ float3 Srgb2linear(float3 c)
 #ifdef WITH_GhostMap
 	return pow(max(float3(0, 0, 0), c), float3(2.2, 2.2, 2.2));
 #else
+	return pow(abs(c), 2);
 	return pow(abs(c), float3(2.2, 2.2, 2.2));
 #endif
 }
@@ -73,7 +74,8 @@ float3 Linear2srgb(float3 c)
 #ifdef WITH_GhostMap
 	return pow(max(float3(0, 0, 0), c), float3(1 / 2.2, 1 / 2.2, 1 / 2.2));
 #else
-	return pow(abs(c), float3(1 / 2.2, 1 / 2.2, 1 / 2.2));
+	return sqrt(abs(c));
+	return pow(abs(c), float3(1 / 2.2, 1 / 2.2, 1 / 2/2));
 #endif
 }
 
@@ -103,6 +105,12 @@ float PackDiffuseF0(float f0)
 	return f0 * 5.0f;//0.2f maps to 1.0
 }
 
+float3 CalcHemAmbient(float3 dominantN)
+{
+	float HemLerpRate = dominantN.y * 0.5f + 0.5f;
+	return lerp(Linear2srgb(gFC_HemAmbCol_d.xyz), Linear2srgb(gFC_HemAmbCol_u.xyz), HemLerpRate);
+}
+
 struct MATERIAL
 {
 	float4 LitColor;
@@ -114,6 +122,10 @@ struct MATERIAL
 	float SubsurfStrength;
 	float SubsurfOpacity;
 	float LightPower;
+
+	float3 envDif;
+	float3 envSpc;
+
 };
 
 GBUFFER_OUT PackGBuffer(GBUFFER_OUT Out, MATERIAL mtl)
@@ -129,21 +141,34 @@ GBUFFER_OUT PackGBuffer(GBUFFER_OUT Out, MATERIAL mtl)
 	#endif
 		break;
 	case 1:
+		//scatter = texCUBElod(gSMP_EnvMap, float4(mtl.Normal, 0)).rgb;
 		scatter = mtl.LitColor.rgb;
 		break;
 	case 2:
 		scatter = Linear2srgb(mtl.DiffuseColor);
+		//scatter = texCUBElod(gSMP_EnvDifMap, float4(mtl.Normal, 0)).rgb;
+		//scatter = gFC_SpcLightVec.xxx;
+		//scatter = gFC_DifMapMultiplier * abs(gFC_DebugMaterialParams.x);
+		scatter = mtl.envDif;
 		break;
 	case 3:
-		scatter = Linear2srgb(mtl.SpecularColor);
+		//scatter = texCUBElod(gSMP_EnvSpcMap, float4(mtl.Normal, 0)).rgb;
+		//scatter = Linear2srgb(mtl.SpecularColor);
+		//scatter = gFC_SpcLightVec.yyy;
+		scatter = mtl.envSpc;
 		break;
 	case 4:
-		scatter = mtl.EmissiveColor;
+		//scatter = texCUBElod(gSMP_EnvDifMap2Sampler, float4(mtl.Normal, 0)).rgb;
+		scatter = CalcHemAmbient(mtl.Normal);
+		//scatter = gFC_SpcLightVec.zzz;
 		break;
 	case 5:
+		//scatter = texCUBElod(gSMP_EnvSpcMap2Sampler, float4(mtl.Normal, 0)).rgb;
 		scatter = mtl.Normal * 0.49804f + 0.49804f;
+		//scatter = gFC_SpcLightVec.www;
 		break;
 	case 6:
+		//scatter = texCUBElod(gSMP_EnvSpcMap, float4(mtl.Normal, 0)).rgb;
 		scatter = float3(mtl.Roughness, 0, 0);
 		break;
 	}
@@ -213,6 +238,11 @@ float linearAttenuation(float distance, float falloffEnd, float OneOverFalloffEn
 	return saturate((falloffEnd - distance)*OneOverFalloffEndMinusStart);
 }
 
+float classicAttenuation(float distance, float falloffEnd,float OneOverFalloffEndMinusStart)
+{
+	return saturate((1.0f - distance / OneOverFalloffEndMinusStart) * falloffEnd);
+}
+
 float qlocAttenuation(float distance, float lightRadius, float decay)
 {
 	return pow(saturate(1.0 - pow((distance / lightRadius), 4.0)), 2.0) / (pow(distance, decay) + DISTANCE_ATTENUATION_BIAS);
@@ -228,7 +258,7 @@ float unrealOffsetAttenuation(float distance, float lightRadius, float OneOverFa
 
 float perceivedLinear(float distance, float falloffEnd, float OneOverFalloffEndMinusStart)
 {
-	return saturate(pow((falloffEnd - distance)*OneOverFalloffEndMinusStart, 3));
+	return saturate(pow((falloffEnd - distance)*OneOverFalloffEndMinusStart, 2));
 }
 
 float3 PointLightContribution(float3 N, float3 L, float3 V,
@@ -427,11 +457,7 @@ float3 CalcSpecularLD(float3 dominantR, float roughness)
 #endif
 }
 
-float3 CalcHemAmbient(float3 dominantN)
-{
-	float HemLerpRate = dominantN.y * 0.5f + 0.5f;
-	return lerp(gFC_HemAmbCol_d.xyz, gFC_HemAmbCol_u.xyz, HemLerpRate);
-}
+
 
 // Approximates luminance from an RGB value
 float CalcLuminance(float3 color)
@@ -556,6 +582,22 @@ float3 CalcPointLightsLegacy(MATERIAL Mtl, float3 V, float3 worldPos, float spec
 	return pointLightComponent;
 }
 
+float3 PhongLightContribution(MATERIAL Mtl, float3 V, float3 L, float3 LampColor,
+ 	float LampDist, float OneOverFalloffEndMinusStart, float LampFalloffEnd, uint falloffMode)
+{
+	float NdotL = max(dot(Mtl.Normal, L), 0.0f); //how much normal faces light direction
+
+	float lampAtt = perceivedLinear(LampDist, LampFalloffEnd, OneOverFalloffEndMinusStart);
+
+	float3 dif = lampAtt * LampColor * NdotL * Mtl.DiffuseColor;
+
+	float3 reflectedVec = reflect(-V, Mtl.Normal);
+	float VdotL = max(dot(V, L), 0.0f);
+	float3 spec = (Mtl.SpecularColor) * lampAtt * LampColor * pow(max(dot(reflectedVec, L), 0.0f), gFC_SpcParam.x);
+
+	return dif + spec;
+}
+
 float3 CalcPointLightsClustered(MATERIAL Mtl, float3 V, float3 worldPos, float specularF90, float lightmapShadow)
 {
 	float3 pointLightComponent = float3(0.0f, 0.0f, 0.0f);
@@ -580,19 +622,24 @@ float3 CalcPointLightsClustered(MATERIAL Mtl, float3 V, float3 worldPos, float s
 		float attenuation = lightParamBuffer[lightID].attenuation;
 		uint falloffMode = lightParamBuffer[lightID].falloffMode;
 		float3 L = lightPosition.xyz - worldPos;
-		float distL = length(L);
+		float distL = length(L); //distance from pixel to light
 		if (distL < lightColor.w) {
 			float lightmapFactor = lerp(lightmapShadow, 1, attenuation);
-			L /= distL;
-			pointLightComponent += PointLightContribution(Mtl.Normal, L, V,
-				Mtl.DiffuseColor, Mtl.SpecularColor, specularF90,
-				Mtl.Roughness, lightColor.xyz, distL,
-				lightPosition.w, lightColor.w, falloffMode) * lightmapFactor;
+			L /= distL; // L is now the normalized vector towards the light from the pixel(?)
+			// pointLightComponent += PointLightContribution(Mtl.Normal, L, V,
+			// 	Mtl.DiffuseColor, Mtl.SpecularColor, specularF90,
+			// 	Mtl.Roughness, lightColor.xyz, distL,
+			// 	lightPosition.w, lightColor.w, falloffMode) * lightmapFactor;
+			pointLightComponent += PhongLightContribution(
+				Mtl, V, L, lightColor.xyz, distL, lightPosition.w, lightColor.w, falloffMode
+			) * lightmapFactor;
 		}
 	}
 
 	return pointLightComponent;
 }
+
+
 
 float3 CalcEmissive(MATERIAL Mtl)
 {
@@ -615,6 +662,27 @@ float3 CalcEmissive(MATERIAL Mtl)
 	return emissiveComponent;
 }
 
+
+float3 SpecularIBL(MATERIAL Mtl, float3 V, float3 worldPos)
+{
+	float mipLevel = linearRoughnessToMipLevel(pow(2.0f / (max(gFC_SpcParam.x * 4.0f, 1.0f) + 2), 0.25f) , gFC_LightProbeMipCount);;
+	float3 R = reflect(-V, Mtl.Normal);
+	float4 specSample = texCUBElod(gSMP_EnvSpcMap, float4(R, mipLevel));
+	float3 spec = gFC_EnvSpcMapMulCol.rgb * specSample.rgb;
+	return spec;
+}
+
+float3 DiffuseIBL(MATERIAL Mtl, float3 worldPos)
+{
+	float4 difSample = texCUBElod(gSMP_EnvDifMap, float4(Mtl.Normal, 0));
+	float3 dif = gFC_EnvDifMapMulCol.rgb * difSample.rgb;
+	return dif;
+}
+
+
+
+
+
 float3 CalcEnvIBL(MATERIAL Mtl, float3 vertexNormal, float3 V, float3 worldPos, float specularF90)
 {
 	float NdotV = dot(Mtl.Normal, V);
@@ -622,6 +690,7 @@ float3 CalcEnvIBL(MATERIAL Mtl, float3 vertexNormal, float3 V, float3 worldPos, 
 	NdotV = saturate(NdotV);
 
 	float3 specularIBL = evaluateIBLSpecular(Mtl.Normal, R, vertexNormal, NdotV, Mtl.Roughness, Mtl.SpecularColor, specularF90);
+	//float3 specularIBL = ClassicIBL(Mtl, V);
 	float3 diffuseIBL = evaluateIBLDiffuse(Mtl.Normal, V, NdotV, Mtl.Roughness);
 #ifdef USE_SH
 	if (gFC_SHEnabled != 0.0f) { // add SH component
@@ -655,9 +724,10 @@ MATERIAL PackMaterial(float4 albedo, float4 pblTexData, float3 normal)
 	}
 	else {
 		Mtl.LightPower = 1.0f;
-		Mtl.DiffuseColor = Srgb2linear(albedo.rgb * gFC_DifMapMulCol.rgb);
-		Mtl.SpecularColor = Srgb2linear(saturate(pblTexData.rgb * gFC_SpcMapMulCol.rgb));
-		Mtl.Roughness = lerp(pblTexData.a, gFC_DebugMaterialParams.x - 1.0f, saturate(gFC_DebugMaterialParams.x));
+		Mtl.DiffuseColor = Srgb2linear(albedo.rgb) * gFC_DifMapMulCol.xyz;
+		Mtl.SpecularColor = Srgb2linear(pblTexData.rgb * gFC_SpcMapMulCol.xyz);
+		//Mtl.SpecularColor = pblTexData.rgb * gFC_SpcMapMulCol.xyz;
+		Mtl.Roughness = 1.0f;
 		Mtl.EmissiveColor = float3(0.0f, 0.0f, 0.0f);
 	}
 
@@ -673,7 +743,7 @@ MATERIAL PackMaterial(float4 albedo, float4 pblTexData, float3 normal)
 		case 2: Mtl.SpecularColor = float3(1, 1, 1); break;
 		}
 	}
-
+	
 	Mtl.Normal = normal;
 
 	return Mtl;
